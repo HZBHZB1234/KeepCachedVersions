@@ -3,23 +3,32 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 using BepInEx;
-using BepInEx.Configuration;
 using BepInEx.Logging;
 using BepInEx.Unity.IL2CPP;
 using HarmonyLib;
-using Il2CppInterop.Runtime.Injection;
-using UnityEngine;
 
 namespace KeepCachedVersions
 {
-    // 1) 双服 bundle 缓存共存: 阻止下载流程内的自动"删旧版本"行为:
-    //    - UnityEngine.Caching.ClearCachedVersions(string, Hash128, bool)  -> no-op
-    //    - Addressable.AddressableManager.ClearOldCache()                  -> no-op  ★本次修复的重点
-    //    - UnityEngine.Caching.ClearCachedVersionInternal(string, Hash128)  -> no-op  (兜底)
-    // 2) 开始页 "Clear all caches" 按钮 -> "Clear cache": 点击弹模态窗口,
-    //    - 清除全部缓存: 调用原事件(游戏自带 ClearAllCachePopup);
-    //    - 清除无用缓存: 请求官方+私服 catalog 索引, 删除两服索引都不包含的缓存条目。
-    [BepInPlugin("com.limbusmods.keepcachedversions", "KeepCachedVersions", "0.2.0")]
+    /// <summary>
+    /// 让官服与私服(Lethe)的 bundle 缓存在同一缓存根下共存：
+    /// 把下载流程里所有"删旧版本"的入口全部打成 no-op，两服各自的内容哈希版本都保留，
+    /// 切换服务器无需重新下载。
+    ///
+    /// 本插件只做"阻止删除"这一件事，不含任何 UI / 主动清理逻辑
+    /// （v0.2.0 的模态窗口与"清除无用缓存"已移除，需要时见 git 历史 d6a871d）。
+    ///
+    /// 三层拦截：
+    ///   1) UnityEngine.Caching.ClearCachedVersions(string, Hash128, bool)  -> no-op
+    ///      下载完成后清掉同名 bundle 其他版本（= 另一服的 inner 目录）的调用点。
+    ///   2) Addressable.AddressableManager.ClearOldCache()                   -> no-op  ★根因路径
+    ///      遍历 Caching.GetCachedVersions() 删掉所有"不在当前 catalog 里"的版本 ——
+    ///      双服场景下另一服的 bundle 天然不在当前 catalog，必然被删。它在
+    ///      DownloadProcess / PrevDownloadProcess 内被调用，且走 2 参
+    ///      ClearCachedVersionInternal，完全绕过 1)，这才是真正的元凶。
+    ///   3) UnityEngine.Caching.ClearCachedVersionInternal(string, Hash128)  -> no-op  (兜底)
+    ///      覆盖 WebRequestOperationCompleted 重试分支等其它调用点。
+    /// </summary>
+    [BepInPlugin("com.limbusmods.keepcachedversions", "KeepCachedVersions", "0.3.0")]
     public class Plugin : BasePlugin
     {
         internal static ManualLogSource LogInstance;
@@ -27,35 +36,15 @@ namespace KeepCachedVersions
         private static int _suppressedOldCache;
         private static int _suppressedInternal;
 
-        internal static void LogInfo(string msg) => LogInstance?.LogInfo(msg);
-        internal static void LogWarning(string msg) => LogInstance?.LogWarning(msg);
-        internal static void LogError(string msg) => LogInstance?.LogError(msg);
-
-        // ---- 配置 ----
-        internal static ConfigEntry<string> OtherServerSettingsPath;
-        internal static ConfigEntry<bool> AllowSingleIndex;
-        internal static ConfigEntry<bool> DryRun;
-        internal static ConfigEntry<string> CdnHeaderValue;
-
         public override void Load()
         {
             LogInstance = base.Log;
-
-            OtherServerSettingsPath = Config.Bind("General", "OtherServerSettingsPath",
-                @"E:\desktop\work\LimbusDecompile\LetheLauncher-Distribution-7\LimbusCompany_Data\StreamingAssets\aa\settings.json",
-                "另一服(官服/私服)的 settings.json 路径; 可填文件、aa 目录或游戏根目录。留空则仅自动探测 Steam 标准安装路径。");
-            AllowSingleIndex = Config.Bind("General", "AllowSingleIndex", false,
-                "false: 必须同时拿到两服索引才执行删除(安全, 推荐); true: 仅凭一份索引也执行(会把另一服独有 bundle 当无用删掉)。");
-            DryRun = Config.Bind("General", "DryRun", false,
-                "true: 清除无用缓存时只统计将删除的条目, 不实际删除。");
-            CdnHeaderValue = Config.Bind("General", "CdnHeaderValue", "this_is_header_value",
-                "请求 CDN catalog 时的 X-Requested-With 值。");
 
             try
             {
                 var harmony = new Harmony("com.limbusmods.keepcachedversions");
 
-                // 1a) 原有的 no-delete 补丁: 3 参 ClearCachedVersions
+                // 1) 原有的 no-delete 补丁: 3 参 ClearCachedVersions
                 var target = FindClearCachedVersions();
                 if (target == null)
                 {
@@ -70,11 +59,7 @@ namespace KeepCachedVersions
                         "[KeepCachedVersions] no-delete patch active: ClearCachedVersions is a no-op");
                 }
 
-                // 1b) ★本次修复的重点: AddressableManager.ClearOldCache()
-                //     该函数遍历 Caching.GetCachedVersions(), 删掉所有"不在当前 catalog 里"的版本 ——
-                //     而双服场景下另一服的 bundle 天然不在当前 catalog, 必然被删。
-                //     它在 DownloadProcess / PrevDownloadProcess 内被调用, 且走的是 2 参
-                //     ClearCachedVersionInternal, 完全绕过 1a 的补丁, 这才是真正的元凶。
+                // 2) ★根因路径: AddressableManager.ClearOldCache()
                 var oldCache = FindClearOldCache();
                 if (oldCache == null)
                 {
@@ -89,8 +74,7 @@ namespace KeepCachedVersions
                         "[KeepCachedVersions] old-cache patch active: AddressableManager.ClearOldCache is a no-op");
                 }
 
-                // 1c) 兜底: 2 参 ClearCachedVersionInternal 也打成 no-op
-                //     覆盖 WebRequestOperationCompleted 重试分支(1868872AF)等其它调用点。
+                // 3) 兜底: 2 参 ClearCachedVersionInternal 也打成 no-op
                 var internalTarget = FindClearCachedVersionInternal();
                 if (internalTarget == null)
                 {
@@ -103,39 +87,6 @@ namespace KeepCachedVersions
                         prefix: new HarmonyMethod(typeof(Plugin), nameof(PrefixClearCachedVersionInternal)));
                     LogInstance.LogInfo(
                         "[KeepCachedVersions] fallback patch active: ClearCachedVersionInternal is a no-op");
-                }
-
-                // 2) 开始页按钮改造
-                var start = AccessTools.Method(typeof(LoginSceneManager), "Start");
-                if (start != null)
-                {
-                    harmony.Patch(start,
-                        postfix: new HarmonyMethod(typeof(LoginScenePatches), nameof(LoginScenePatches.StartPostfix)));
-                    LogInstance.LogInfo(
-                        "[KeepCachedVersions] login scene patch active: 'Clear cache' button + cleanup modal");
-                }
-                else
-                {
-                    LogInstance.LogError(
-                        "[KeepCachedVersions] LoginSceneManager.Start not found; button patch NOT applied");
-                }
-
-                // 3) 模态窗口 UI（注入的 MonoBehaviour，uGUI + TMP）
-                //    ⚠️ 不能用 IMGUI/OnGUI：本作 IL2CPP 把 IMGUI 的原生实现整段剥掉了
-                //    （GUIStyle.padding/font、GUILayout.FlexibleSpace、GUI.DrawTexture …），
-                //    v0.2.0 因此每帧抛 NotSupportedException: Method unstripping failed。
-                //    详见 docs/KeepCachedVersions-IMGUI-STRIPPED-FIX-PLAN.md
-                try
-                {
-                    ClassInjector.RegisterTypeInIl2Cpp<CacheCleanupUI>();
-                    var go = new GameObject("KeepCachedVersions_CacheCleanupUI");
-                    UnityEngine.Object.DontDestroyOnLoad(go);
-                    go.hideFlags |= HideFlags.HideAndDontSave;
-                    go.AddComponent<CacheCleanupUI>();
-                }
-                catch (Exception uiEx)
-                {
-                    LogInstance.LogError($"[KeepCachedVersions] UI setup failed: {uiEx}");
                 }
             }
             catch (Exception e)
@@ -163,9 +114,10 @@ namespace KeepCachedVersions
                 .FirstOrDefault(m => m.Name == "ClearCachedVersionInternal" && m.GetParameters().Length == 2);
         }
 
-        // ★本次修复新增: Addressable.AddressableManager.ClearOldCache()
-        //   不直接 typeof(AddressableManager), 而是按全名在 Assembly-CSharp 里找,
-        //   以免命名空间/程序集变化时编译期就挂掉; 找不到只是不打补丁(降级为旧行为)。
+        // ★Addressable.AddressableManager.ClearOldCache()
+        //   不直接 typeof(AddressableManager), 而是按全名在各程序集里运行时找 ——
+        //   这样编译期不需要 Assembly-CSharp 引用（保证插件不依赖任何游戏类型），
+        //   命名空间/程序集变化也不会编译失败; 找不到只是不打补丁(降级为旧行为)。
         private static MethodInfo FindClearOldCache()
         {
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
@@ -192,7 +144,7 @@ namespace KeepCachedVersions
             return false;
         }
 
-        // ★ClearOldCache 为 void 实例方法: 直接跳过原方法体。
+        // ClearOldCache 为 void 实例方法: 直接跳过原方法体。
         //   这是双服共存失效的根因路径, 日志不限流(调用次数本就很少)。
         private static bool PrefixClearOldCache()
         {

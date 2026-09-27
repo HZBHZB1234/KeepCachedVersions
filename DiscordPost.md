@@ -7,7 +7,7 @@ KeepCachedVersions is a lightweight BepInEx plugin that stops Limbus Company fro
 
 **How It Works (technical)**
 
-The plugin is a runtime HarmonyX patch over a single Unity caching API. Here is the full mechanism, root cause, and fix:
+The plugin is a set of runtime HarmonyX no-op patches over the deletion entry points of the Unity caching / Addressables download pipeline. Here is the full mechanism, root cause, and fix:
 
 1. **Shared cache root.** Both the official server and the private (Lethe) server share the same Unity `Caching` directory — `%USERPROFILE%\AppData\LocalLow\Unity\ProjectMoon_LimbusCompany\`. There is no per-server cache separation (the Lethe `CachePath` redirect is dead code).
 
@@ -22,9 +22,10 @@ The plugin is a runtime HarmonyX patch over a single Unity caching API. Here is 
    Semantics: keep the version it just downloaded, **delete every other version under that bundle name** — i.e. the *other server's* `inner` folder. This call goes through the `Caching` API (eventually via vtable to native `Cache::RemoveCacheEntry` / `RemoveDirectoryW`), not a plain `Directory.Delete`.
    Result: switch server → current server downloads the missing bundle → wipes the other server's `inner` → switch back → missing again → re-download. Roughly ~34 divergent bundles (unit/enemy/shader/ui/story/skin) per switch.
 
-4. **The fix.** The plugin targets `UnityEngine.Caching.ClearCachedVersions(string, Hash128, bool)` (internal static) and turns it into a no-op:
-   - It locates the method by **reflection on name + 3-parameter count** (avoiding IL2CPP interop's `Hash128` ref/value mismatch that would break signature matching).
-   - It applies a Harmony **Prefix** that returns `false` and sets `__result = false`, so the original method is skipped — every "clear other versions" call becomes a no-op. `__result = false` signals "operation not performed" to callers.
+4. **The fix.** The plugin turns every "delete cached versions" entry point in the download pipeline into a no-op via a Harmony **Prefix** that returns `false`:
+   - `UnityEngine.Caching.ClearCachedVersions(string, Hash128, bool)` — the post-download "clear other versions" call. Located by **reflection on name + 3-parameter count**, avoiding the IL2CPP interop `Hash128` ref/value mismatch that would break signature matching. `__result = false` signals "operation not performed".
+   - `Addressable.AddressableManager.ClearOldCache()` — ★ the real culprit. It walks `Caching.GetCachedVersions()` and deletes every version **not in the current catalog**; in a dual-server setup the other server's bundles are never in the active catalog, so they always get wiped. Called from `DownloadProcess` / `PrevDownloadProcess` via the 2-arg `ClearCachedVersionInternal`, which fully bypasses the first patch. Found at runtime by assembly scan, so the plugin compiles without any game-type reference.
+   - `UnityEngine.Caching.ClearCachedVersionInternal(string, Hash128)` — fallback, covering the `WebRequestOperationCompleted` retry branch and any other call sites.
 
 5. **Why it's safe / side-effect notes.**
    - **Global, not Lethe-only:** both servers, after downloading, stop clearing the other's `inner`. On the official server everything is already a cache hit, so the call is never even triggered → no gameplay side effects.
@@ -60,9 +61,10 @@ KeepCachedVersions 是一个轻量级 BepInEx 插件，解决每次在私服（L
    语义是：保留刚下载的版本，**删除该 bundle 名下所有其他版本** —— 也就是*另一台服务器*的 `inner` 目录。这个调用走 `Caching` API（最终经虚表落到原生 `Cache::RemoveCacheEntry` / `RemoveDirectoryW`），并非普通的 `Directory.Delete`。
    结果：切换服务器 → 当前服下载缺失包 → 清掉对方服的 `inner` → 切回对方又缺 → 再次下载。实测每次切换约 34 个差异包（unit/enemy/shader/ui/story/skin 等混合类型）。
 
-4. **修复方式。** 插件以 `UnityEngine.Caching.ClearCachedVersions(string, Hash128, bool)`（internal static）为目标，将其打成空操作（no-op）：
-   - 通过**反射按"方法名 + 参数个数(3)"**定位 `MethodInfo`，避开 IL2CPP interop 中 `Hash128` 的 ref/值 形态差异导致的签名匹配失败。
-   - 应用一个 Harmony **Prefix**，返回 `false` 并将 `__result = false`，从而跳过原方法 —— 任何"清除其他版本"的调用都变成 no-op。`__result = false` 向调用方表示"操作未执行"。
+4. **修复方式。** 插件把下载管线中所有"删除缓存版本"的入口经 Harmony **Prefix**（返回 `false`）打成空操作（no-op）：
+   - `UnityEngine.Caching.ClearCachedVersions(string, Hash128, bool)` —— 下载完成后的"清除其他版本"调用。通过**反射按"方法名 + 参数个数(3)"**定位 `MethodInfo`，避开 IL2CPP interop 中 `Hash128` 的 ref/值 形态差异导致的签名匹配失败。`__result = false` 向调用方表示"操作未执行"。
+   - `Addressable.AddressableManager.ClearOldCache()` —— ★真正的元凶。它遍历 `Caching.GetCachedVersions()`，删除所有**不在当前 catalog 里**的版本；双服场景下另一服的 bundle 天然不在当前 catalog，必然被清。它在 `DownloadProcess` / `PrevDownloadProcess` 内被调用，走 2 参 `ClearCachedVersionInternal`，完全绕过上一条补丁。运行时按程序集扫描定位，插件编译期不依赖任何游戏类型。
+   - `UnityEngine.Caching.ClearCachedVersionInternal(string, Hash128)` —— 兜底，覆盖 `WebRequestOperationCompleted` 重试分支及其它调用点。
 
 5. **为何安全 / 副作用说明。**
    - **全局生效，不限于 Lethe：** 两服各自下载后都不再清除对方的 `inner`。官服正常游玩时一切本就是命中，该调用根本不会被触发 → 无游戏逻辑副作用。
@@ -74,38 +76,8 @@ KeepCachedVersions 是一个轻量级 BepInEx 插件，解决每次在私服（L
 
 ---
 
-## v0.2.0 — Start-page "Clear cache" button + unused-cache cleanup
+## Version history
 
-**English**
-
-**Function**
-- The start-page button "Clear all caches" is renamed to **"Clear cache"** (localized: EN/JP/KR).
-- Clicking it opens a modal with three choices:
-  - **Clear all caches** — invokes the original event: opens the game's own `ClearAllCachePopup`, whose OK still performs the full wipe (`Caching.ClearCache()` + Project Moon data dirs).
-  - **Clear unused caches** — requests the **official catalog index** and the **private-server (Lethe) catalog index**, then deletes only local cache entries that are referenced by **neither** index (stale versions from both servers).
-  - **Cancel**.
-- Progress and results are shown in the modal (localized).
-
-**How the "unused cache" cleanup works**
-1. Cache root resolved at runtime (`Caching.currentCacheForWriting.path`, fallback `%LocalLow%\Unity\ProjectMoon_LimbusCompany`).
-2. s-tokens discovered from `StreamingAssets/aa/settings.json` of the running server **plus** the other server's `settings.json` (Steam standard path is auto-detected; a custom path can be set in the mod config `OtherServerSettingsPath`).
-3. Both indexes are fetched over **host .NET `HttpClient`** — this deliberately bypasses `UnityWebRequest`, so **Lethe's request-path redirection** (`download.limbuscompanycdn.org` → `assets.lethelc.site`) cannot silently turn the "official" index into the private one.
-4. All distinct catalogs are parsed (same regex logic as `CacheWarmer`/`prepare_update.py`); the union of `inner` content-hashes (+ `outer` keys as a fallback for special bundles) is the keep-set.
-5. **Safety gate:** if only one server's index can be obtained, the operation aborts (deleting with a single index would remove the other server's unique bundles, defeating this plugin's purpose). Config `AllowSingleIndex=true` forces it; config `DryRun=true` previews without deleting.
-
-**中文**
-
-**功能**
-- 开始页 "Clear all caches" 按钮改名为 **"Clear cache"**（按游戏语言适配 EN/JP/KR）。
-- 点击后弹出模态窗口，三个选项：
-  - **清除全部缓存** —— 调用原事件：打开游戏自带 `ClearAllCachePopup`，其 OK 仍执行完整清理（`Caching.ClearCache()` + Project Moon 数据目录）。
-  - **清除无用缓存** —— 请求**官服 catalog 索引**与**私服（Lethe）catalog 索引**，只删除两服索引**都不引用**的本地缓存条目（两服的过期版本）。
-  - **取消**。
-- 模态窗口内显示进度与结果（按语言本地化）。
-
-**"清除无用缓存"原理**
-1. 运行时解析缓存根（`Caching.currentCacheForWriting.path`，回退 `%LocalLow%\Unity\ProjectMoon_LimbusCompany`）。
-2. 从当前服务器 `StreamingAssets/aa/settings.json` **以及**另一服 `settings.json` 发现 s-token（Steam 标准路径自动探测；也可在配置 `OtherServerSettingsPath` 指定）。
-3. 两份索引都走**宿主 .NET `HttpClient`** 拉取 —— 刻意避开 `UnityWebRequest`，从而**不受 Lethe 请求路径重定向**（`download.limbuscompanycdn.org` → `assets.lethelc.site`）影响，官方索引不会被悄悄换成私服索引。
-4. 解析全部不同 catalog（与 `CacheWarmer`/`prepare_update.py` 相同的正则逻辑）；`inner` content-hash 并集（+ `outer` 键兜底特殊 bundle）即保留集。
-5. **安全闸：** 若只拿到一份服务器索引则中止（单一索引会把另一服独有 bundle 当无用删掉，违背本插件共存目的）。配置 `AllowSingleIndex=true` 可强制；配置 `DryRun=true` 只预览不删除。
+- **v0.1.0** — single no-op patch on `Caching.ClearCachedVersions`.
+- **v0.2.0** — added the `AddressableManager.ClearOldCache` and `ClearCachedVersionInternal` patches (the real root-cause path), plus a start-page "Clear cache" button with a uGUI modal and a dual-catalog "clear unused cache" feature.
+- **v0.3.0** — removed all UI code (login-scene button patch, modal, cache cleaner, localization strings). The plugin is now purely the three deletion-blocking no-op patches described above; it compiles without any game-type reference. The v0.2.0 UI is preserved in git history (commit `d6a871d`).

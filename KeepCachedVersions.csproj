@@ -15,7 +15,8 @@
 
   <!--
     引用根目录。默认指向 Lethe 分发包（与本机实际运行环境一致）；
-    想改指游戏本体目录就传 -p:RefDir=<路径>。
+    想改指游戏本体目录就传 -p:RefDir=<路径>（例：
+    -p:RefDir="C:\Program Files (x86)\Steam\steamapps\common\Limbus Company\BepInEx"）。
   -->
   <PropertyGroup>
     <RefDir Condition="'$(RefDir)' == ''">E:\desktop\work\LimbusDecompile\LetheLauncher-Distribution-7\BepInEx</RefDir>
@@ -23,8 +24,20 @@
     <RefInterop>$(RefDir)\interop</RefInterop>
   </PropertyGroup>
 
+  <!--
+    v0.3.0 起本插件只做"阻止删除"（3 个 Harmony no-op 前缀），不含任何 UI。
+    因此引用集收缩到最小：BepInEx + HarmonyX + UnityEngine.CoreModule（Caching 所在模块）。
+
+    刻意 **不引用**：
+      - Assembly-CSharp / Il2CppInterop.Runtime / Unity.TextMeshPro / UnityEngine.UI /
+        UIModule / TextRenderingModule / InputLegacyModule —— UI 相关全部移除；
+      - UnityEngine.IMGUIModule —— 本作 IL2CPP 把 IMGUI 原生实现整段剥掉了，
+        运行期必抛 NotSupportedException: Method unstripping failed（v0.2.0 的教训，
+        详见 docs/KeepCachedVersions-IMGUI-STRIPPED-FIX-PLAN.md）。
+    AddressableManager 通过运行时反射查找，编译期不依赖游戏类型。
+  -->
   <ItemGroup>
-    <!-- BepInEx 6.0.0 + HarmonyX + Il2CppInterop 1.5.3 -->
+    <!-- BepInEx 6.0.0 + HarmonyX -->
     <Reference Include="BepInEx.Core">
       <HintPath>$(RefCore)\BepInEx.Core.dll</HintPath>
       <Private>false</Private>
@@ -37,65 +50,15 @@
       <HintPath>$(RefCore)\0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <Reference Include="Il2CppInterop.Runtime">
-      <HintPath>$(RefCore)\Il2CppInterop.Runtime.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
   </ItemGroup>
 
   <ItemGroup>
-    <Reference Include="Assembly-CSharp">
-      <HintPath>$(RefInterop)\Assembly-CSharp.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
     <Reference Include="Il2Cppmscorlib">
       <HintPath>$(RefInterop)\Il2Cppmscorlib.dll</HintPath>
       <Private>false</Private>
     </Reference>
-  </ItemGroup>
-
-  <ItemGroup>
-    <!--
-      Unity 运行时。
-
-      ⚠️ 刻意 **不引用** UnityEngine.IMGUIModule / UnityEngine.TextRenderingModule：
-      本作 IL2CPP 把 IMGUI 的原生实现整段剥掉了（GUIStyle.padding/font、
-      GUILayout.FlexibleSpace、GUI.DrawTexture …），interop 里签名还在所以编译得过，
-      但运行期必抛 `System.NotSupportedException: Method unstripping failed`。
-      v0.2.0 的 CacheCleanupUI.OnGUI 就是这么翻车的（日志被刷 2520 行）。
-
-      不引用 → 任何 IMGUI 代码在编译期就被拒，不会再溜到运行期。
-      另有 verify_ugui.py 反查源码关键字兜底。
-      详见 docs/KeepCachedVersions-IMGUI-STRIPPED-FIX-PLAN.md
-    -->
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>$(RefInterop)\UnityEngine.CoreModule.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <!--
-      TextRenderingModule：只为 UnityEngine.TextAnchor（LayoutGroup.childAlignment 用）。
-      TextAnchor 是 uGUI 阵营的文本对齐枚举，**不是** IMGUI 的，未被剥离。
-    -->
-    <Reference Include="UnityEngine.TextRenderingModule">
-      <HintPath>$(RefInterop)\UnityEngine.TextRenderingModule.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="UnityEngine.InputLegacyModule">
-      <HintPath>$(RefInterop)\UnityEngine.InputLegacyModule.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <!-- Canvas / CanvasScaler 所在模块 -->
-    <Reference Include="UnityEngine.UIModule">
-      <HintPath>$(RefInterop)\UnityEngine.UIModule.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <!-- uGUI：本插件用它绘制（游戏自己的 UI 体系，方法都健在） -->
-    <Reference Include="UnityEngine.UI">
-      <HintPath>$(RefInterop)\UnityEngine.UI.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="Unity.TextMeshPro">
-      <HintPath>$(RefInterop)\Unity.TextMeshPro.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
