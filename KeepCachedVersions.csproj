@@ -9,36 +9,93 @@
     <RootNamespace>KeepCachedVersions</RootNamespace>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
+    <!-- 游戏 interop 程序集很大且签名不完整，关闭无关告警 -->
+    <NoWarn>$(NoWarn);CS0436;CS0618</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    引用根目录。默认指向 Lethe 分发包（与本机实际运行环境一致）；
+    想改指游戏本体目录就传 -p:RefDir=<路径>。
+  -->
+  <PropertyGroup>
+    <RefDir Condition="'$(RefDir)' == ''">E:\desktop\work\LimbusDecompile\LetheLauncher-Distribution-7\BepInEx</RefDir>
+    <RefCore>$(RefDir)\core</RefCore>
+    <RefInterop>$(RefDir)\interop</RefInterop>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- BepInEx 6.0.0 + HarmonyX 2.10.2 + il2cpp interop (Limbus Company Steam, 2026-08-20 build) -->
+    <!-- BepInEx 6.0.0 + HarmonyX + Il2CppInterop 1.5.3 -->
     <Reference Include="BepInEx.Core">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Limbus Company\BepInEx\core\BepInEx.Core.dll</HintPath>
+      <HintPath>$(RefCore)\BepInEx.Core.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="BepInEx.Unity.IL2CPP">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Limbus Company\BepInEx\core\BepInEx.Unity.IL2CPP.dll</HintPath>
+      <HintPath>$(RefCore)\BepInEx.Unity.IL2CPP.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="0Harmony">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Limbus Company\BepInEx\core\0Harmony.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="Assembly-CSharp">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Limbus Company\BepInEx\interop\Assembly-CSharp.dll</HintPath>
+      <HintPath>$(RefCore)\0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Il2CppInterop.Runtime">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Limbus Company\BepInEx\core\Il2CppInterop.Runtime.dll</HintPath>
+      <HintPath>$(RefCore)\Il2CppInterop.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(RefInterop)\Assembly-CSharp.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Il2Cppmscorlib">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Limbus Company\BepInEx\interop\Il2Cppmscorlib.dll</HintPath>
+      <HintPath>$(RefInterop)\Il2Cppmscorlib.dll</HintPath>
       <Private>false</Private>
     </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Unity 运行时。
+
+      ⚠️ 刻意 **不引用** UnityEngine.IMGUIModule / UnityEngine.TextRenderingModule：
+      本作 IL2CPP 把 IMGUI 的原生实现整段剥掉了（GUIStyle.padding/font、
+      GUILayout.FlexibleSpace、GUI.DrawTexture …），interop 里签名还在所以编译得过，
+      但运行期必抛 `System.NotSupportedException: Method unstripping failed`。
+      v0.2.0 的 CacheCleanupUI.OnGUI 就是这么翻车的（日志被刷 2520 行）。
+
+      不引用 → 任何 IMGUI 代码在编译期就被拒，不会再溜到运行期。
+      另有 verify_ugui.py 反查源码关键字兜底。
+      详见 docs/KeepCachedVersions-IMGUI-STRIPPED-FIX-PLAN.md
+    -->
     <Reference Include="UnityEngine.CoreModule">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Limbus Company\BepInEx\interop\UnityEngine.CoreModule.dll</HintPath>
+      <HintPath>$(RefInterop)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!--
+      TextRenderingModule：只为 UnityEngine.TextAnchor（LayoutGroup.childAlignment 用）。
+      TextAnchor 是 uGUI 阵营的文本对齐枚举，**不是** IMGUI 的，未被剥离。
+    -->
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(RefInterop)\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(RefInterop)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Canvas / CanvasScaler 所在模块 -->
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(RefInterop)\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- uGUI：本插件用它绘制（游戏自己的 UI 体系，方法都健在） -->
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(RefInterop)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(RefInterop)\Unity.TextMeshPro.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

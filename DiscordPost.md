@@ -71,3 +71,41 @@ KeepCachedVersions 是一个轻量级 BepInEx 插件，解决每次在私服（L
    - **磁盘增长：** 由于两个版本都不会被删，缓存文件夹会增长以容纳两台服务器的资源。若想释放空间，可手动清理缓存。
 
 *以上结论已对照 2026-08-20 构建（Unity 6000.3.12f1、metadata v39），经 IL2CPP `dump.cs` 与 IDA 调用链分析验证。*
+
+---
+
+## v0.2.0 — Start-page "Clear cache" button + unused-cache cleanup
+
+**English**
+
+**Function**
+- The start-page button "Clear all caches" is renamed to **"Clear cache"** (localized: EN/JP/KR).
+- Clicking it opens a modal with three choices:
+  - **Clear all caches** — invokes the original event: opens the game's own `ClearAllCachePopup`, whose OK still performs the full wipe (`Caching.ClearCache()` + Project Moon data dirs).
+  - **Clear unused caches** — requests the **official catalog index** and the **private-server (Lethe) catalog index**, then deletes only local cache entries that are referenced by **neither** index (stale versions from both servers).
+  - **Cancel**.
+- Progress and results are shown in the modal (localized).
+
+**How the "unused cache" cleanup works**
+1. Cache root resolved at runtime (`Caching.currentCacheForWriting.path`, fallback `%LocalLow%\Unity\ProjectMoon_LimbusCompany`).
+2. s-tokens discovered from `StreamingAssets/aa/settings.json` of the running server **plus** the other server's `settings.json` (Steam standard path is auto-detected; a custom path can be set in the mod config `OtherServerSettingsPath`).
+3. Both indexes are fetched over **host .NET `HttpClient`** — this deliberately bypasses `UnityWebRequest`, so **Lethe's request-path redirection** (`download.limbuscompanycdn.org` → `assets.lethelc.site`) cannot silently turn the "official" index into the private one.
+4. All distinct catalogs are parsed (same regex logic as `CacheWarmer`/`prepare_update.py`); the union of `inner` content-hashes (+ `outer` keys as a fallback for special bundles) is the keep-set.
+5. **Safety gate:** if only one server's index can be obtained, the operation aborts (deleting with a single index would remove the other server's unique bundles, defeating this plugin's purpose). Config `AllowSingleIndex=true` forces it; config `DryRun=true` previews without deleting.
+
+**中文**
+
+**功能**
+- 开始页 "Clear all caches" 按钮改名为 **"Clear cache"**（按游戏语言适配 EN/JP/KR）。
+- 点击后弹出模态窗口，三个选项：
+  - **清除全部缓存** —— 调用原事件：打开游戏自带 `ClearAllCachePopup`，其 OK 仍执行完整清理（`Caching.ClearCache()` + Project Moon 数据目录）。
+  - **清除无用缓存** —— 请求**官服 catalog 索引**与**私服（Lethe）catalog 索引**，只删除两服索引**都不引用**的本地缓存条目（两服的过期版本）。
+  - **取消**。
+- 模态窗口内显示进度与结果（按语言本地化）。
+
+**"清除无用缓存"原理**
+1. 运行时解析缓存根（`Caching.currentCacheForWriting.path`，回退 `%LocalLow%\Unity\ProjectMoon_LimbusCompany`）。
+2. 从当前服务器 `StreamingAssets/aa/settings.json` **以及**另一服 `settings.json` 发现 s-token（Steam 标准路径自动探测；也可在配置 `OtherServerSettingsPath` 指定）。
+3. 两份索引都走**宿主 .NET `HttpClient`** 拉取 —— 刻意避开 `UnityWebRequest`，从而**不受 Lethe 请求路径重定向**（`download.limbuscompanycdn.org` → `assets.lethelc.site`）影响，官方索引不会被悄悄换成私服索引。
+4. 解析全部不同 catalog（与 `CacheWarmer`/`prepare_update.py` 相同的正则逻辑）；`inner` content-hash 并集（+ `outer` 键兜底特殊 bundle）即保留集。
+5. **安全闸：** 若只拿到一份服务器索引则中止（单一索引会把另一服独有 bundle 当无用删掉，违背本插件共存目的）。配置 `AllowSingleIndex=true` 可强制；配置 `DryRun=true` 只预览不删除。
